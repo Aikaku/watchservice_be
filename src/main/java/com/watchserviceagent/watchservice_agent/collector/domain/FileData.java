@@ -2,25 +2,45 @@ package com.watchserviceagent.watchservice_agent.collector.domain;
 
 import lombok.Builder;
 import lombok.Data;
+
 import java.nio.file.Path;
 
 /**
- * Collector 도메인의 기본 데이터 모델
- * - 분석 대상 파일의 기본 속성 정보를 나타냄
+ * Collector가 파일 시스템에서 직접 읽어온 "기본 메타데이터"를 담는 도메인 객체.
+ *
+ * - 파일의 존재 여부, 디렉터리 여부
+ * - 사이즈, 마지막 수정 시각 등
+ * - 실질적인 해시/엔트로피 계산 결과는 FileAnalysisResult에 포함된다.
  */
 @Data
 @Builder
 public class FileData {
-    private Path filePath;      // 파일 경로
-    private long size;          // 파일 크기 (byte 단위)
-    private long lastModified;  // 마지막 수정 시각
-    private String extension;   // 확장자
 
     /**
-     * 파일 메타데이터 수집 (정적 팩토리 메서드)
+     * 파일의 절대 경로.
      */
-    public static FileData fromPath(String filePath) {
-        // TODO: Files API를 사용하여 FileData 생성
-        return FileData.builder().build();
-    }
+    private Path path;
+
+    /**
+     * 파일이 현재 실제로 존재하는지 여부.
+     * - DELETE 이벤트의 경우 false일 수 있음.
+     */
+    private boolean exists;
+
+    /**
+     * 디렉터리인지 여부.
+     */
+    private boolean directory;
+
+    /**
+     * 파일 크기 (바이트 단위).
+     * - 디렉터리거나 존재하지 않는 경우 0 또는 -1로 둘 수 있다.
+     */
+    private long size;
+
+    /**
+     * 마지막 수정 시각 (epoch millis).
+     * - 존재하지 않는 경우 0 또는 -1로 둘 수 있다.
+     */
+    private long lastModifiedTime;
 }
