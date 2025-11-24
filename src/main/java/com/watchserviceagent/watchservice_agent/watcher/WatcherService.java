@@ -18,34 +18,15 @@ import java.util.concurrent.Executors;
  * Java NIO WatchService 기반으로
  * 특정 폴더(및 하위 폴더)의 파일/디렉터리 변경 이벤트를 감지하는 서비스.
  *
- * 주요 역할:
- *  - startWatching(path)
- *      → 지정한 경로를 감시 대상에 등록하고
- *      → 별도 스레드에서 WatchService 이벤트 루프를 실행
- *  - stopWatching()
- *      → 감시 스레드 및 WatchService 정리
- *  - 내부적으로
- *      → ENTRY_CREATE / ENTRY_MODIFY / ENTRY_DELETE 이벤트를 감지하고
- *      → WatcherEventRecord로 만들어 Collector/Storage/AI로 넘길 수 있는 형태로 구성
+ * + 폴더/파일 등록 시 초기 baseline을 수집하는 역할도 수행한다.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class WatcherService {
 
-    /**
-     * 파일 해시/엔트로피 분석을 담당하는 Collector 서비스.
-     * - 현재 WatcherService에서는 직접 사용하지 않고,
-     *   나중에 이벤트 처리 시점에 연동할 Hook 용도로 주입해둔다.
-     */
-    private final FileCollectorService fileCollectorService;
-
-    /**
-     * 사용자(에이전트)별 고유 UUID(ownerKey)를 관리하는 유틸.
-     * - static 메서드로 부르는 것이 아니라
-     *   스프링 빈으로 주입받은 인스턴스에서 getSessionId()를 호출해야 한다.
-     */
-    private final SessionIdManager sessionIdManager;
+    private final FileCollectorService fileCollectorService; // Collector 연동
+    private final SessionIdManager sessionIdManager;         // ownerKey(UUID) 관리
 
     /** OS 파일 시스템 이벤트를 수신하는 Java NIO WatchService 인스턴스 */
     private WatchService watchService;
@@ -83,7 +64,7 @@ public class WatcherService {
         this.executor = Executors.newSingleThreadExecutor();
         this.watchRootPath = targetPath;
 
-        // 4) 디렉터리인지, 파일인지에 따라 등록 방식 분기
+        // 4) 디렉터리인지, 파일인지에 따라 등록 방식 분기 (실시간 감시용)
         if (Files.isDirectory(targetPath)) {
             // 폴더인 경우: 해당 폴더 + 모든 하위 폴더를 재귀적으로 등록
             registerDirectoryRecursively(targetPath);
@@ -100,7 +81,16 @@ public class WatcherService {
 
         log.info("[Watcher] 감시 시작: {}", targetPath);
 
-        // 5) WatchService 이벤트를 소비하는 감시 루프 시작 (별도 스레드)
+        // ✅ 5) baseline 수집: 등록 시점의 전체 파일 상태를 INITIAL로 DB에 저장
+        try {
+            String ownerKey = sessionIdManager.getSessionId();
+            scanInitialBaseline(ownerKey, targetPath);
+        } catch (Exception e) {
+            // baseline 실패해도 감시 자체는 계속되도록, 로그만 찍고 진행
+            log.error("[Watcher] 초기 baseline 수집 중 오류 발생 - path={}", targetPath, e);
+        }
+
+        // 6) WatchService 이벤트를 소비하는 감시 루프 시작 (별도 스레드)
         startWatchLoop();
     }
 
@@ -135,6 +125,44 @@ public class WatcherService {
                 StandardWatchEventKinds.ENTRY_DELETE
         );
         log.debug("[Watcher] 디렉터리 등록: {}", dir.toAbsolutePath());
+    }
+
+    /**
+     * ✅ 폴더/파일 등록 시 초기 baseline을 수집하는 메서드.
+     *
+     * - targetPath가 디렉터리이면: 하위 모든 파일에 대해 INITIAL 이벤트 기록
+     * - targetPath가 파일이면: 그 파일 하나에 대해서만 INITIAL 이벤트 기록
+     *
+     * @param ownerKey   세션/사용자 식별자
+     * @param targetPath 사용자가 감시 등록한 경로 (폴더 or 파일)
+     */
+    private void scanInitialBaseline(String ownerKey, Path targetPath) throws IOException {
+        if (Files.isDirectory(targetPath)) {
+            log.info("[Watcher] 초기 baseline 수집 시작 (디렉터리) - root={}", targetPath);
+
+            // 디렉터리 트리를 순회하면서 "파일"만 골라서 baseline 기록
+            Files.walkFileTree(targetPath, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    try {
+                        if (Files.isRegularFile(file)) {
+                            fileCollectorService.collectInitialBaseline(ownerKey, file);
+                        }
+                    } catch (Exception e) {
+                        log.warn("[Watcher] baseline 수집 중 파일 처리 실패 - file={}", file, e);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+
+            log.info("[Watcher] 초기 baseline 수집 완료 (디렉터리) - root={}", targetPath);
+        } else if (Files.isRegularFile(targetPath)) {
+            log.info("[Watcher] 초기 baseline 수집 시작 (단일 파일) - file={}", targetPath);
+            fileCollectorService.collectInitialBaseline(ownerKey, targetPath);
+            log.info("[Watcher] 초기 baseline 수집 완료 (단일 파일) - file={}", targetPath);
+        } else {
+            log.warn("[Watcher] baseline 수집 대상이 파일/디렉터리가 아닙니다: {}", targetPath);
+        }
     }
 
     /**
@@ -234,7 +262,7 @@ public class WatcherService {
 
         // 이벤트 감지 시각
         Instant now = Instant.now();
-        // ✅ 세션 ID는 SessionIdManager 인스턴스에서 가져온다 (static 호출 X)
+        // ✅ 세션 ID는 SessionIdManager 인스턴스에서 가져온다
         String ownerKey = sessionIdManager.getSessionId();
 
         // Collector/Storage/AI로 넘길 수 있는 DTO 형태로 묶는다.
@@ -258,14 +286,9 @@ public class WatcherService {
             }
         }
 
-        // ✅ 이 지점에서 Collector/Storage/AI 연동을 수행할 수 있다.
+        // Collector 호출
         try {
-            // 예시) Collector에 전달해서 파일 해시/엔트로피 분석 및 이후 파이프라인으로 넘김
-            // fileCollectorService.handleWatchEvent(record);
-            //
-            // 아직 FileCollectorService의 시그니처가 확정되지 않았으면
-            // 위 코드를 주석으로 두고, 나중에 메서드 이름/파라미터에 맞게 연결하면 된다.
-
+            fileCollectorService.handleWatchEvent(record);
         } catch (Exception e) {
             log.error("[Watcher] Collector 호출 중 오류 발생", e);
         }

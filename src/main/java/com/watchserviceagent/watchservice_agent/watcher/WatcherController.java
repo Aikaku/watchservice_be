@@ -6,15 +6,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
 
-/**
- * WatcherService에 대한 REST 엔드포인트.
- *
- * - /watcher/start  : 감시 시작
- * - /watcher/stop   : 감시 중지
- *
- * 실제 프로젝트에서는 ResponseEntity, 에러 코드, DTO 등을 더 세련되게 쓸 수 있지만
- * 졸업프로젝트 1차 버전에서는 문자열 응답만으로도 충분하다.
- */
 @Slf4j
 @RestController
 @RequestMapping("/watcher")
@@ -23,36 +14,69 @@ public class WatcherController {
 
     private final WatcherService watcherService;
 
+    // ===================== 감시 시작 =====================
+
     /**
-     * 감시 시작 요청.
-     *
-     * @param folderPath 감시할 루트 경로 (폴더 또는 파일)
-     * @return 시작 결과 메시지
+     * 감시 시작 (POST 요청용)
+     * curl -X POST "http://localhost:8080/watcher/start?folderPath=/path/..."
      */
     @PostMapping("/start")
-    public String startWatching(@RequestParam String folderPath) {
+    public String startWatchingPost(@RequestParam("folderPath") String folderPath) {
+        return startInternal(folderPath);
+    }
+
+    /**
+     * 감시 시작 (GET 요청용)
+     * 브라우저 주소창에서 바로 호출 가능:
+     * http://localhost:8080/watcher/start?folderPath=/Users/...
+     */
+    @GetMapping("/start")
+    public String startWatchingGet(@RequestParam("folderPath") String folderPath) {
+        return startInternal(folderPath);
+    }
+
+    /**
+     * 실제 감시 시작 로직 (GET/POST 공통)
+     */
+    private String startInternal(String folderPath) {
+        log.info("[WatcherController] 감시 시작 요청 - folderPath={}", folderPath);
         try {
             watcherService.startWatching(folderPath);
             return "[Watcher] 감시를 시작했습니다: " + folderPath;
         } catch (Exception e) {
-            log.error("[Watcher] 감시 시작 실패 - path={}", folderPath, e);
+            log.error("[WatcherController] 감시 시작 실패", e);
             return "[Watcher] 감시 시작 실패: " + e.getMessage();
         }
     }
 
+    // ===================== 감시 중지 =====================
+
     /**
-     * 감시 중지 요청.
-     *
-     * @return 중지 결과 메시지
+     * 감시 중지 (POST)
      */
     @PostMapping("/stop")
-    public String stopWatching() {
+    public String stopWatchingPost() {
+        return stopInternal();
+    }
+
+    /**
+     * 감시 중지 (GET)
+     * 브라우저에서 http://localhost:8080/watcher/stop 로 호출 가능
+     */
+    @GetMapping("/stop")
+    public String stopWatchingGet() {
+        return stopInternal();
+    }
+
+    private String stopInternal() {
+        log.info("[WatcherController] 감시 중지 요청");
         try {
             watcherService.stopWatching();
             return "[Watcher] 감시를 중지했습니다.";
         } catch (IOException e) {
-            log.error("[Watcher] 감시 중지 실패", e);
+            log.error("[WatcherController] 감시 중지 실패", e);
             return "[Watcher] 감시 중지 실패: " + e.getMessage();
         }
     }
 }
+

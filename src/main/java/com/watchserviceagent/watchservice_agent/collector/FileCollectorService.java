@@ -46,15 +46,48 @@ public class FileCollectorService {
 
         FileAnalysisResult result = analyzePath(ownerKey, eventType, path, eventTime);
 
-        // ✅ 이전에는 log.info로만 찍었지만, 이제는 Storage 큐에 비동기 저장 요청
+        // ✅ Storage 큐에 비동기 저장 요청
         logService.saveAsync(result);
 
-        // 디버깅용 로그는 유지
+        // 디버깅용 로그
         log.info("[FileCollector] 분석 결과 enqueue - ownerKey={}, eventType={}, path={}, exists={}, size={}, hash={}, entropy={}",
                 result.getOwnerKey(),
                 result.getEventType(),
                 result.getPath(),
                 result.isExists(),
+                result.getSize(),
+                result.getHash(),
+                result.getEntropy()
+        );
+    }
+
+    /**
+     * ✅ 폴더 등록 시 "초기 baseline"을 기록하기 위한 메서드.
+     *
+     * - Watcher 이벤트 없이도, 지정된 파일 경로에 대해
+     *   eventType = "INITIAL" 로 FileAnalysisResult를 생성하여 DB에 저장한다.
+     *
+     * @param ownerKey 세션/사용자 식별자
+     * @param path     초기 상태를 기록할 파일 경로
+     */
+    public void collectInitialBaseline(String ownerKey, Path path) {
+        if (ownerKey == null || path == null) {
+            log.warn("[FileCollector] collectInitialBaseline - ownerKey 또는 path가 null입니다. ownerKey={}, path={}", ownerKey, path);
+            return;
+        }
+
+        // INITIAL 이벤트는 Watcher 이벤트가 아니라 baseline 등록이므로
+        // eventTime은 지금 시간(Instant.now())를 사용한다.
+        Instant now = Instant.now();
+
+        FileAnalysisResult result = analyzePath(ownerKey, "INITIAL", path, now);
+
+        // baseline도 일반 이벤트와 동일하게 비동기로 저장
+        logService.saveAsync(result);
+
+        log.info("[FileCollector] 초기 baseline 기록 - ownerKey={}, path={}, size={}, hash={}, entropy={}",
+                result.getOwnerKey(),
+                result.getPath(),
                 result.getSize(),
                 result.getHash(),
                 result.getEntropy()
