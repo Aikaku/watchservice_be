@@ -1,39 +1,37 @@
 package com.watchserviceagent.watchservice_agent.watcher.dto;
 
-import lombok.AllArgsConstructor;
-import lombok.Data;
+import com.watchserviceagent.watchservice_agent.watcher.domain.WatcherEvent;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.ToString;
 
 import java.time.Instant;
 
 /**
- * Collector(그리고 나중에는 Storage/AI)로 전달할 이벤트 데이터 DTO.
+ * WatcherEvent 를 다른 계층(Collector, Storage, API)에 전달할 때 사용하는 DTO.
  *
- * - Watcher 레이어에서 "이 사용자 / 어떤 이벤트 / 어떤 경로 / 언제" 를
- *   한 번에 담아서 넘길 때 사용한다.
+ * - Path 대신 문자열 path 를 사용하고,
+ * - 시간은 epochMillis(long)로 변환해서 전달한다.
  */
-@Data
-@AllArgsConstructor
+@Getter
+@Builder
+@ToString
 public class WatcherEventRecord {
 
-    /**
-     * 사용자 세션 키 (UUID).
-     *  - SessionIdManager에서 생성/관리하는 ownerKey.
-     */
-    private String ownerKey;
+    private final String ownerKey;
+    private final String eventType;   // CREATE / MODIFY / DELETE
+    private final String path;        // 절대 경로 문자열
+    private final long eventTimeMs;   // epoch millis
 
-    /**
-     * 이벤트 타입 문자열.
-     *  - CREATE / MODIFY / DELETE
-     */
-    private String eventType;
+    public static WatcherEventRecord from(WatcherEvent event) {
+        Instant t = event.getEventTime();
+        long epochMillis = (t != null) ? t.toEpochMilli() : 0L;
 
-    /**
-     * 이벤트가 발생한 파일/폴더의 절대 경로 문자열.
-     */
-    private String path;
-
-    /**
-     * 이벤트 발생(감지) 시각.
-     */
-    private Instant timestamp;
+        return WatcherEventRecord.builder()
+                .ownerKey(event.getOwnerKey())
+                .eventType(event.getEventType())
+                .path(event.getPathString())
+                .eventTimeMs(epochMillis)
+                .build();
+    }
 }

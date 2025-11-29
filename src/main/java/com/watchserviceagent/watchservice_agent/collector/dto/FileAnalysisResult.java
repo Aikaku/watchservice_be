@@ -1,53 +1,106 @@
 package com.watchserviceagent.watchservice_agent.collector.dto;
 
 import lombok.Builder;
-import lombok.Data;
+import lombok.Getter;
+import lombok.ToString;
 
 import java.time.Instant;
 
 /**
- * Collector가 하나의 Watcher 이벤트에 대해 생성하는 "분석 결과" DTO.
+ * 파일 시스템 이벤트 1건에 대해 Collector 가 계산한
+ * "변경 전/후 파일 상태"를 담는 DTO.
  *
- * - ownerKey: 어떤 사용자(에이전트)의 이벤트인지
- * - eventType: CREATE / MODIFY / DELETE
- * - path: 파일 절대 경로
- * - exists: 이벤트 처리 시점에 파일이 실제 존재하는지
- * - size / lastModifiedTime: 파일 메타데이터
- * - hash: SHA-256 해시 (파일이 존재하고 읽기에 성공했을 때)
- * - entropy: Shannon 엔트로피 (파일이 존재하고 읽기에 성공했을 때)
- * - collectedAt: Collector가 이 결과를 생성한 시각
- *
- * 이후 Storage(LogWriterWorker)에서 이 DTO를 큐에 받아
- * DB(Log, FileState 등)에 기록하는 용도로 사용할 수 있다.
+ * 이 객체는 나중에:
+ * - 로그 저장(Storage)
+ * - 윈도우 단위 피처 집계(EventWindowAggregator)
+ * 에서 공통으로 사용된다.
  */
-@Data
+@Getter
 @Builder
+@ToString
 public class FileAnalysisResult {
 
-    /** 세션/사용자 식별자 (SessionIdManager에서 생성한 UUID) */
-    private String ownerKey;
+    /**
+     * 세션/사용자 구분용 ownerKey.
+     */
+    private final String ownerKey;
 
-    /** 이벤트 타입 (CREATE / MODIFY / DELETE 등) */
-    private String eventType;
+    /**
+     * 이벤트 타입: CREATE / MODIFY / DELETE
+     */
+    private final String eventType;
 
-    /** 파일의 절대 경로 문자열 */
-    private String path;
+    /**
+     * 대상 파일의 절대 경로 문자열.
+     */
+    private final String path;
 
-    /** Collector가 분석을 수행한 시점 */
-    private Instant collectedAt;
+    /**
+     * Collector 기준 이벤트 처리 시각.
+     */
+    private final Instant eventTime;
 
-    /** 파일이 실제로 존재하는지 여부 (DELETE 이벤트의 경우 false 가능) */
-    private boolean exists;
+    /**
+     * 변경 이전(previous) 시점에 Collector 가 알고 있던 파일의 크기 (bytes).
+     * 이전 상태를 모르는 경우 null.
+     */
+    private final Long sizeBefore;
 
-    /** 파일 크기 (바이트). 존재하지 않으면 0 또는 -1 */
-    private long size;
+    /**
+     * 변경 이후(current) 시점의 파일 크기 (bytes).
+     * 파일이 존재하지 않으면 null.
+     */
+    private final Long sizeAfter;
 
-    /** 마지막 수정 시간 (epoch millis). 존재하지 않으면 0 또는 -1 */
-    private long lastModifiedTime;
+    /**
+     * 변경 이전(previous) 시점의 샘플 엔트로피 (Shannon entropy).
+     * 이전 상태를 모르는 경우 null.
+     */
+    private final Double entropyBefore;
 
-    /** 파일 SHA-256 해시 (존재하고 읽기에 성공했을 때) */
-    private String hash;
+    /**
+     * 변경 이후(current) 시점의 샘플 엔트로피 (Shannon entropy).
+     * 파일이 존재하지 않으면 null.
+     */
+    private final Double entropyAfter;
 
-    /** Shannon 엔트로피 (존재하고 읽기에 성공했을 때) */
-    private Double entropy;
+    /**
+     * 변경 이전(previous) 시점의 파일 확장자 (소문자, '.' 없이),
+     * 확장자가 없으면 null.
+     */
+    private final String extBefore;
+
+    /**
+     * 변경 이후(current) 시점의 파일 확장자 (소문자, '.' 없이),
+     * 파일이 존재하지 않거나 확장자가 없으면 null.
+     */
+    private final String extAfter;
+
+    /**
+     * 현재 시점에 파일이 존재하는지 여부.
+     * (DELETE 이벤트 이후에는 false 일 수 있음)
+     */
+    private final boolean existsAfter;
+
+    /**
+     * 엔트로피 차이: entropyAfter - entropyBefore.
+     * 둘 중 하나라도 null 이면 0.0 으로 처리.
+     */
+    public double getEntropyDiff() {
+        if (entropyBefore == null || entropyAfter == null) {
+            return 0.0;
+        }
+        return entropyAfter - entropyBefore;
+    }
+
+    /**
+     * 파일 크기 차이: sizeAfter - sizeBefore.
+     * 둘 중 하나라도 null 이면 0 으로 처리.
+     */
+    public long getSizeDiff() {
+        if (sizeBefore == null || sizeAfter == null) {
+            return 0L;
+        }
+        return sizeAfter - sizeBefore;
+    }
 }
