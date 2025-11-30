@@ -25,6 +25,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class LogRepository {
 
+    // Spring 이 주입하는 JdbcTemplate
     private final JdbcTemplate jdbcTemplate;
 
     /**
@@ -125,7 +126,7 @@ public class LogRepository {
     }
 
     /**
-     * log 테이블에서 ResultSet → Log 객체로 변환하는 RowMapper.
+     * ResultSet → Log 객체로 변환하는 RowMapper.
      */
     private RowMapper<Log> logRowMapper() {
         return new RowMapper<>() {

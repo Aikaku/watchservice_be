@@ -18,17 +18,17 @@ import java.util.List;
 public class DashboardSummaryResponse {
 
     /**
-     * 세션 기준 ownerKey (프론트에서 직접 쓸 일은 거의 없음, 디버그용)
+     * 이 에이전트(설치) 식별용 ownerKey.
      */
     private String ownerKey;
 
     /**
-     * 보호 상태 코드: SAFE / WARNING / DANGER
+     * 상태 코드 (SAFE / WARNING / DANGER)
      */
     private String status;
 
     /**
-     * 사람이 보기 좋은 보호 상태 텍스트 (예: "안전", "주의", "위험")
+     * 상태 라벨 (예: "안전", "주의", "위험")
      */
     private String statusLabel;
 

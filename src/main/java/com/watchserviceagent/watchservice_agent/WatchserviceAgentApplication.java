@@ -9,6 +9,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class WatchserviceAgentApplication {
 
 	public static void main(String[] args) {
+		log.info("[Test] - 1");
 		SpringApplication.run(WatchserviceAgentApplication.class, args);
 	}
 }

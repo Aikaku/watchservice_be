@@ -13,6 +13,11 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.stream.Collectors;
 
+/**
+ * 로그 조회용 REST 컨트롤러.
+ *
+ * - 현재 세션(에이전트)의 ownerKey 를 기준으로 최근 로그를 반환한다.
+ */
 @RestController
 @RequiredArgsConstructor
 @Slf4j
@@ -23,6 +28,8 @@ public class LogController {
 
     /**
      * 현재 세션(에이전트)의 최근 로그 조회.
+     *
+     * GET /logs/recent?limit=100
      */
     @GetMapping("/logs/recent")
     public List<LogResponse> getRecentLogs(

@@ -30,6 +30,10 @@ import java.util.*;
 @Slf4j
 public class EventWindowAggregator {
 
+    public EventWindowAggregator() {
+        log.info("EventWindowAggregator 작동");
+    }
+
     /** 윈도우 길이 (ms 단위). 예: 3000ms = 3초 */
     private static final long WINDOW_MILLIS = 3000L;
 

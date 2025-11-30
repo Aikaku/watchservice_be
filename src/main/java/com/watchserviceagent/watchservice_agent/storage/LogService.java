@@ -11,7 +11,7 @@ import java.util.List;
  * Storage 레이어의 서비스.
  *
  * 역할:
- *  - Collector 쪽에서 FileAnalysisResult를 enqueue(...) 로 전달받아
+ *  - Collector 쪽에서 FileAnalysisResult를 saveAsync(...) 로 전달받아
  *    LogWriterWorker 큐에 넣는 진입점.
  *  - Controller 쪽에서 로그 조회 요청이 오면 LogRepository를 통해 조회.
  */

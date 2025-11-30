@@ -3,6 +3,7 @@ package com.watchserviceagent.watchservice_agent.watcher;
 import com.watchserviceagent.watchservice_agent.analytics.EventWindowAggregator;
 import com.watchserviceagent.watchservice_agent.collector.FileCollectorService;
 import com.watchserviceagent.watchservice_agent.collector.dto.FileAnalysisResult;
+import com.watchserviceagent.watchservice_agent.storage.LogService;
 import com.watchserviceagent.watchservice_agent.common.util.SessionIdManager;
 import com.watchserviceagent.watchservice_agent.watcher.domain.WatcherEvent;
 import com.watchserviceagent.watchservice_agent.watcher.dto.WatcherEventRecord;
@@ -11,24 +12,31 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.nio.file.*;
+import java.nio.file.ClosedWatchServiceException;
+import java.nio.file.FileSystems;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardWatchEventKinds;
+import java.nio.file.WatchEvent;
+import java.nio.file.WatchEvent.Kind;
+import java.nio.file.WatchKey;
+import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import static java.nio.file.StandardWatchEventKinds.*;
-
 /**
- * NIO WatchService 를 이용하여 디렉토리(및 하위 디렉토리)를 실시간 감시하는 서비스.
+ * Java NIO WatchService 를 사용하여 디렉토리/하위 디렉토리를 감시하는 서비스.
  *
- * - /watcher/start?folderPath=... 에서 이 서비스를 통해 감시 시작
- * - /watcher/stop 에서 감시 중단
- *
- * 이벤트 발생 시:
- *  1) WatcherEvent / WatcherEventRecord 생성
- *  2) FileCollectorService.analyze() 로 변경 전/후 상태 계산
- *  3) EventWindowAggregator.onFileAnalysisResult() 로 윈도우 단위 피처 집계
+ * 전체 흐름:
+ *  1) WatchService 로 OS 파일 변경 이벤트(생성/수정/삭제)를 감지
+ *  2) WatcherEventRecord 로 변환 (ownerKey, eventType, path, eventTimeMs)
+ *  3) FileCollectorService.analyze() 로 변경 전/후 상태 계산
+ *  4) LogService.saveAsync() 로 비동기 로그 저장 큐에 적재
+ *  5) EventWindowAggregator.onFileAnalysisResult() 로 윈도우 단위 피처 집계
  */
 @Service
 @RequiredArgsConstructor
@@ -38,6 +46,7 @@ public class WatcherService {
     private final SessionIdManager sessionIdManager;
     private final FileCollectorService fileCollectorService;
     private final EventWindowAggregator eventWindowAggregator;
+    private final LogService logService; // 비동기 로그 저장 서비스
 
     private WatchService watchService;
     private Thread watcherThread;
@@ -72,163 +81,179 @@ public class WatcherService {
 
         running = true;
 
-        watcherThread = new Thread(this::watchLoop, "watchservice-agent-watcher-thread");
-        watcherThread.setDaemon(true);
+        // 별도 스레드에서 watchLoop 실행
+        watcherThread = new Thread(this::watchLoop, "WatcherService-Thread");
         watcherThread.start();
 
-        log.info("Start watching path = {}", root.toAbsolutePath());
+        log.info("Started watching folder: {}", folderPath);
     }
 
     /**
-     * 감시 중지.
+     * 모든 하위 디렉토리를 재귀적으로 순회하며 WatchService 에 등록.
      */
-    public synchronized void stopWatching() {
-        running = false;
-        if (watcherThread != null) {
-            watcherThread.interrupt();
-            watcherThread = null;
-        }
-        if (watchService != null) {
-            try {
-                watchService.close();
-            } catch (IOException e) {
-                log.warn("Failed to close watchService", e);
-            } finally {
-                watchService = null;
-            }
-        }
-        keyDirMap.clear();
-
-        // 남아 있는 윈도우가 있으면 flush
-        eventWindowAggregator.flushIfNeeded();
-
-        log.info("Stop watching");
-    }
-
-    /**
-     * WatchService 메인 루프.
-     */
-    private void watchLoop() {
-        while (running) {
-            WatchKey key;
-            try {
-                key = watchService.take(); // blocking
-            } catch (InterruptedException e) {
-                if (!running) {
-                    log.info("Watcher thread interrupted because of stopWatching");
-                    return;
-                }
-                log.warn("Watcher thread interrupted unexpectedly", e);
-                continue;
-            } catch (ClosedWatchServiceException e) {
-                log.info("WatchService closed, exiting watchLoop");
-                return;
-            }
-
-            Path dir = keyDirMap.get(key);
-            if (dir == null) {
-                log.warn("WatchKey not recognized (directory mapping missing). key={}", key);
-                boolean valid = key.reset();
-                if (!valid) {
-                    keyDirMap.remove(key);
-                }
-                continue;
-            }
-
-            for (WatchEvent<?> event : key.pollEvents()) {
-                WatchEvent.Kind<?> kind = event.kind();
-
-                // OVERFLOW 무시
-                if (kind == StandardWatchEventKinds.OVERFLOW) {
-                    log.warn("WatchService OVERFLOW occurred");
-                    continue;
-                }
-
-                @SuppressWarnings("unchecked")
-                WatchEvent<Path> ev = (WatchEvent<Path>) event;
-                Path name = ev.context();
-                Path child = dir.resolve(name);
-
-                String ownerKey = sessionIdManager.getSessionId();
-                String eventType = mapKindToEventType(kind);
-                Instant now = Instant.now();
-
-                WatcherEvent watcherEvent = WatcherEvent.builder()
-                        .ownerKey(ownerKey)
-                        .eventType(eventType)
-                        .fullPath(child.toAbsolutePath())
-                        .eventTime(now)
-                        .build();
-
-                WatcherEventRecord record = WatcherEventRecord.from(watcherEvent);
-
-                log.debug("WatcherEvent: {}", watcherEvent);
-
-                // 하위 디렉토리가 새로 생성된 경우, 재귀 등록
-                if (kind == ENTRY_CREATE) {
-                    if (Files.isDirectory(child)) {
-                        try {
-                            registerAll(child);
-                        } catch (IOException e) {
-                            log.warn("Failed to register sub directory: {}", child, e);
-                        }
-                    }
-                }
-
-                // Collector 에서 변경 전/후 상태 분석
-                FileAnalysisResult analysisResult = fileCollectorService.analyze(record);
-
-                // 윈도우 단위 피처 집계기에게 전달
-                eventWindowAggregator.onFileAnalysisResult(analysisResult);
-            }
-
-            boolean valid = key.reset();
-            if (!valid) {
-                keyDirMap.remove(key);
-                if (keyDirMap.isEmpty()) {
-                    log.info("No directories are being watched anymore. stopping watchLoop.");
-                    break;
-                }
-            }
-        }
-    }
-
-    /**
-     * 단일 디렉토리 등록.
-     */
-    private void registerDir(Path dir) throws IOException {
-        WatchKey key = dir.register(
-                watchService,
-                ENTRY_CREATE,
-                ENTRY_MODIFY,
-                ENTRY_DELETE
-        );
-        keyDirMap.put(key, dir);
-        log.info("Registered directory for watching: {}", dir.toAbsolutePath());
-    }
-
-    /**
-     * 루트 디렉토리와 모든 하위 디렉토리를 재귀적으로 WatchService 에 등록.
-     */
-    private void registerAll(final Path start) throws IOException {
-        Files.walkFileTree(start, new SimpleFileVisitor<>() {
+    private void registerAll(Path start) throws IOException {
+        Files.walkFileTree(start, new java.util.HashSet<>(), Integer.MAX_VALUE, new java.nio.file.SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                registerDir(dir);
+                register(dir);
                 return FileVisitResult.CONTINUE;
             }
         });
     }
 
     /**
-     * NIO WatchEvent.Kind → "CREATE" / "MODIFY" / "DELETE" 문자열로 매핑.
+     * 개별 디렉토리를 WatchService 에 등록.
      */
-    private String mapKindToEventType(WatchEvent.Kind<?> kind) {
-        if (kind == ENTRY_CREATE) {
+    private void register(Path dir) throws IOException {
+        WatchKey key = dir.register(
+                watchService,
+                StandardWatchEventKinds.ENTRY_CREATE,
+                StandardWatchEventKinds.ENTRY_MODIFY,
+                StandardWatchEventKinds.ENTRY_DELETE
+        );
+        keyDirMap.put(key, dir);
+        log.info("Registered directory for watching: {}", dir);
+    }
+
+    /**
+     * 감시 중지.
+     */
+    public synchronized void stopWatching() {
+        if (!running) {
+            log.info("Watcher is not running. ignore stopWatching request.");
+            return;
+        }
+
+        running = false;
+
+        if (watchService != null) {
+            try {
+                watchService.close();
+            } catch (IOException e) {
+                log.warn("Failed to close WatchService", e);
+            }
+        }
+
+        if (watcherThread != null) {
+            watcherThread.interrupt();
+            try {
+                watcherThread.join(3000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Interrupted while waiting for watcherThread to join", e);
+            }
+        }
+
+        keyDirMap.clear();
+        log.info("Stopped watching.");
+    }
+
+    /**
+     * WatchService 이벤트 루프.
+     *
+     * - WatchKey 를 꺼내서, 등록된 디렉토리 기준으로 이벤트를 해석하고,
+     * - WatcherEventRecord 로 변환한 뒤 Collector/Analytics/Storage 로 전달.
+     */
+    private void watchLoop() {
+        String ownerKey = sessionIdManager.getSessionId();
+        log.info("Watcher loop started. ownerKey={}", ownerKey);
+
+        try {
+            while (running) {
+                WatchKey key;
+                try {
+                    key = watchService.take(); // 블로킹
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    log.info("Watcher loop interrupted");
+                    break;
+                } catch (ClosedWatchServiceException e) {
+                    log.info("WatchService has been closed. stop watcher loop.");
+                    break;
+                }
+
+                Path dir = keyDirMap.get(key);
+                if (dir == null) {
+                    log.warn("WatchKey not recognized. skip.");
+                    boolean valid = key.reset();
+                    if (!valid) {
+                        keyDirMap.remove(key);
+                    }
+                    continue;
+                }
+
+                for (WatchEvent<?> event : key.pollEvents()) {
+                    Kind<?> kind = event.kind();
+
+                    if (kind == StandardWatchEventKinds.OVERFLOW) {
+                        log.warn("WatchService overflow event occurred. some events may have been lost.");
+                        continue;
+                    }
+
+                    @SuppressWarnings("unchecked")
+                    WatchEvent<Path> ev = (WatchEvent<Path>) event;
+                    Path name = ev.context();
+                    Path child = dir.resolve(name);
+
+                    String eventType = mapKindToEventType(kind);
+                    long eventTimeMs = System.currentTimeMillis();
+
+                    WatcherEventRecord record = WatcherEventRecord.builder()
+                            .ownerKey(ownerKey)
+                            .eventType(eventType)
+                            .path(child.toAbsolutePath().toString())
+                            .eventTimeMs(eventTimeMs)
+                            .build();
+
+                    log.debug("Watcher event: {}", record);
+
+                    // Collector 에서 변경 전/후 상태 분석
+                    FileAnalysisResult analysisResult = fileCollectorService.analyze(record);
+
+                    // 비동기 로그 저장 및 윈도우 단위 피처 집계기로 전달
+                    logService.saveAsync(analysisResult);
+                    eventWindowAggregator.onFileAnalysisResult(analysisResult);
+
+                    // 디렉토리가 새로 생성되면 하위 디렉토리도 추가 등록
+                    if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
+                        if (Files.isDirectory(child)) {
+                            try {
+                                registerAll(child);
+                            } catch (IOException e) {
+                                log.warn("Failed to register sub directory: {}", child, e);
+                            }
+                        }
+                    }
+                }
+
+                boolean valid = key.reset();
+                if (!valid) {
+                    keyDirMap.remove(key);
+                    if (keyDirMap.isEmpty()) {
+                        log.info("No directories are being watched anymore. stopping watchLoop.");
+                        break;
+                    }
+                }
+            }
+        } catch (ClosedWatchServiceException e) {
+            log.info("WatchService has been closed. watcher loop will exit.");
+        } catch (Exception e) {
+            log.error("Unexpected error in watcher loop", e);
+        } finally {
+            running = false;
+            log.info("Watcher loop finished.");
+        }
+    }
+
+    /**
+     * Java NIO 이벤트 Kind → 우리 쪽 이벤트 타입 문자열 매핑.
+     */
+    private String mapKindToEventType(Kind<?> kind) {
+        if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
             return "CREATE";
-        } else if (kind == ENTRY_MODIFY) {
+        } else if (kind == StandardWatchEventKinds.ENTRY_MODIFY) {
             return "MODIFY";
-        } else if (kind == ENTRY_DELETE) {
+        } else if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
             return "DELETE";
         } else {
             return "UNKNOWN";
