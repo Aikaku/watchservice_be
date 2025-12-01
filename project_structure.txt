@@ -1,46 +1,111 @@
 .
-├── ai/                               # AI 분석 도메인 (AI 서버 연동 및 응답 처리)
-│   ├── AiController.java              # [Controller] AI 관련 요청 처리 (예: 분석 요청 API)
-│   ├── AiService.java                 # [Service] AI 서버와 통신, 분석 요청 및 결과 수신 처리
+├── common/                                      # 공통 설정 + 유틸 패키지
+│   ├── config/
+│   │   └── WebConfig.java                       # [Config] CORS 등 웹 설정 (프론트에서 API 호출 가능하게 해주는 역할)
+│   │
+│   └── util/
+│       └── SessionIdManager.java                # [Util] 설치 단위 ownerKey(UUID) 생성/저장 (config/session_id.txt 사용)
+│                                                #        - 이 ownerKey로 같은 PC의 로그/설정/AI 결과를 구분
+
+├── watcher/                                     # Watcher 레이어: OS 파일 시스템 이벤트 감시
+│   ├── WatcherController.java                   # [Controller] /watcher/start, /watcher/stop 감시 제어 REST API
+│   ├── WatcherService.java                      # [Service] Java NIO WatchService로 디렉토리/하위 디렉토리 감시
+│   ├── WatcherRepository.java                   # [Repository] 현재 감시 중인 경로/상태를 보관 (in-memory, 향후 확장 여지)
+│   │
+│   ├── dto/
+│   │   └── WatcherEventRecord.java              # [DTO] OS 이벤트 1건 표현 (eventType, path, 발생 시간 등)
+│   │                                            #        - WatchService에서 받은 이벤트를 Collector로 넘길 때 사용
+│   │
+│   └── domain/
+│       └── WatcherEvent.java                    # [Domain] 감시 이벤트 도메인 객체
+│                                                #          - WatcherEventRecord보다 풍부한 정보/의미를 담는 용도
+
+├── collector/                                   # Collector 레이어: 파일 상태 비교 및 1건 분석
+│   ├── FileCollectorService.java                # [Service] WatcherEventRecord → 이전/현재 파일 상태 비교
+│   │                                            #          - sizeBefore/After, entropyBefore/After, extBefore/After 계산
+│   │                                            #          - 결과로 FileAnalysisResult 생성 → EventWindowAggregator로 전달
+│   │
+│   ├── dto/
+│   │   └── FileAnalysisResult.java              # [DTO] “이 이벤트 한 건”에 대한 분석 결과
+│   │                                            #        - eventType, path, size/entropy/ext before/after 등 포함
+│   │
+│   ├── business/
+│   │   ├── EntropyAnalyzer.java                 # [Component] 파일 내용을 샘플링해 엔트로피 계산
+│   │   └── HashCalculator.java                  # [Component] 파일 해시(SHA-256 등) 계산
+│   │                                            #             - 필요 시 변경 감지/무결성 체크에 활용
+│   │
+│   └── (스냅샷 도메인 FileData 등은 현재 구조에서 제거된 상태)
+
+├── analytics/                                   # Analytics 레이어: 윈도우 집계 & AI 피처 생성
+│   └── EventWindowAggregator.java               # [Component] 여러 FileAnalysisResult를 3초 윈도우로 묶어 집계
+│                                                #  - file_read_count, file_write_count, file_delete_count 등 9개 피처 산출
+│                                                #  - AiPayload로 변환해 AiService에 분석 요청
+│                                                #  - AiResult를 받아서 LogService.saveAsync로 로그 저장까지 연결
+
+├── ai/                                          # AI 레이어: 외부 AI 서버 연동 및 결과 도메인
+│   ├── AiController.java                        # [Controller] (선택) AI 테스트용 API
+│   │                                            #  - 예: /ai/analyze 로 프론트/포스트맨에서 직접 피처 넣어보기
+│   │
+│   ├── AiService.java                           # [Service] 외부 AI 서버와 HTTP 통신
+│   │                                            #  - AiPayload(JSON) 전송 → 응답을 AiResult로 변환
+│   │                                            #  - EventWindowAggregator에서 주로 호출
+│   │
 │   ├── domain/
-│   │   └── AiResult.java              # [Domain Model] AI가 반환한 분석 결과를 표현 (예: 위험도, 판정 결과 등)
+│   │   └── AiResult.java                        # [Domain] AI가 판단한 분석 결과
+│   │                                            #  - label(SAFE/WARNING/DANGER), score, detail(설명) 등 포함
+│   │
 │   └── dto/
-│       ├── AiPayload.java             # [DTO] AI 서버로 요청을 보낼 때 사용하는 데이터 포맷
-│       └── AiResponse.java            # [DTO] AI 서버로부터 수신하는 응답 데이터 포맷
+│       ├── AiPayload.java                       # [DTO] AI 서버 요청 페이로드 (9개 피처 JSON)
+│       │                                        #  - file_read_count, file_write_count, file_delete_count, ...
+│       └── AiResponse.java                      # [DTO] 외부 AI 서버 raw 응답 매핑용 (필드 구조에 맞춰 사용)
 
-├── collector/                         # 파일 분석 도메인 (Watcher에서 전달된 파일을 실제로 분석)
-│   ├── business/                      # Collector의 핵심 비즈니스 로직 (도메인 서비스 계층)
-│   │   ├── EntropyAnalyzer.java       # [Domain Service] 파일의 Shannon 엔트로피를 계산 (무작위도 측정)
-│   │   └── HashCalculator.java        # [Domain Service] 파일의 해시(MD5, SHA-256 등) 값을 계산
+├── storage/                                     # Storage 레이어: SQLite 기반 로그 저장/조회
+│   ├── LogController.java                       # [Controller] /logs/recent?limit=... 로그 조회 API
+│   │                                            #  - 프론트 LogsPage, Notifications 쪽에서 사용
+│   │
+│   ├── LogService.java                          # [Service] 로그 저장/조회 비즈니스 로직
+│   │                                            #  - FileAnalysisResult(+AiResult)를 LogWriterWorker 큐에 enqueue
+│   │                                            #  - 최근 로그 조회(getRecentLogs) 제공
+│   │
+│   ├── LogWriterWorker.java                     # [Worker] 비동기 로그 저장 워커
+│   │                                            #  - BlockingQueue<FileAnalysisResult> 소비
+│   │                                            #  - LogRepository.insertLog 호출을 직렬화 (DB 부하/동시성 제어)
+│   │
+│   ├── LogRepository.java                       # [Repository] SQLite log 테이블 DDL + CRUD
+│   │                                            #  - @PostConstruct에서 CREATE TABLE IF NOT EXISTS log 수행
+│   │                                            #  - insertLog, findRecentLogsByOwner 등 제공
+│   │
 │   ├── domain/
-│   │   └── FileData.java              # [Domain Model] 분석 대상 파일의 속성(경로, 크기, 수정 시간 등)을 표현
-│   ├── dto/
-│   │   └── FileAnalysisResult.java    # [DTO] Collector의 분석 결과 (파일 해시, 엔트로피 등)를 다른 도메인에 전달
-│   └── FileCollectorService.java      # [Application Service] Collector의 상위 서비스.
-│                                      # - FileData 수집 → Hash/Entropy 계산기 호출 → 결과(FileAnalysisResult) 생성 및 반환
+│   │   └── Log.java                             # [Domain] log 테이블 레코드 도메인 모델
+│   │                                            #  - id, ownerKey, eventType, path, exists, size, entropy
+│   │                                            #  - aiLabel, aiScore, aiDetail, collectedAt 등
+│   │
+│   └── dto/
+│       └── LogResponse.java                     # [DTO] 프론트로 내려보내는 로그 1건 응답
+│                                                #  - collectedAt(문자열), eventType, path, aiLabel, aiScore 등 포함
 
-├── common/                            # 공통 모듈 (도메인 간 공유되는 설정, 예외, 유틸리티)
-│   ├── config/                        # [Config] Spring 설정 클래스, Bean 등록 등 환경 구성
-│   ├── exception/                     # [Exception] 전역 예외 처리기 및 커스텀 예외 정의
-│   └── util/                          # [Utility] 공통 유틸 함수 (파일, JSON 변환, 해시, 시간 관련 등)
+├── dashboard/                                   # Dashboard 레이어: 대시보드 상단 요약 카드용
+│   ├── DashboardController.java                 # [Controller] /dashboard/summary API
+│   │                                            #  - 최근 로그 기반으로 status/statusLabel/lastEventTime 계산
+│   │                                            #  - DANGER/WARNING 개수 등도 함께 내려줄 수 있음
+│   │
+│   └── dto/
+│       └── DashboardSummaryResponse.java        # [DTO] 대시보드 요약 응답
+│                                                #  - status(SAFE/WARNING/DANGER), statusLabel(안전/주의/위험)
+│                                                #  - lastEventTime, dangerCount, warningCount, totalCount, watchedPath 등
 
-├── storage/                           # 데이터 저장 도메인 (Collector의 결과를 DB 또는 로그 파일에 저장)
-│   ├── domain/
-│   │   └── Log.java                   # [Domain Model / Entity] 저장되는 로그 데이터 (파일 이벤트 기록)
-│   ├── LogController.java             # [Controller] 로그 조회/관리용 API 제공
-│   ├── LogRepository.java             # [Repository] SQLite 등 로컬 DB 접근, 로그 CRUD 구현
-│   └── LogService.java                # [Service] 로그 저장, 조회, 삭제 등의 비즈니스 로직 수행
-
-├── watcher/                           # 파일 감시 도메인 (사용자가 지정한 폴더 내 파일 변화를 감시)
-│   ├── domain/
-│   │   ├── WatcherEvent.java          # [Domain Model] 파일/폴더 감시 이벤트 (CREATE, MODIFY, DELETE 등)를 표현
-│   │   └── WatcherPath.java           # [Domain Model] 감시 대상 경로를 관리 (경로 검증, 상대경로 계산 등)
-│   ├── dto/
-│   │   └── WatcherEventRecord.java    # [DTO] 감지된 이벤트를 Collector 도메인으로 전달하기 위한 데이터 객체
-│   ├── WatcherController.java         # [Controller] 감시 시작/중지 등의 사용자 요청(API) 처리
-│   ├── WatcherRepository.java         # [Repository] (옵션) 감시 이력, 설정 정보 등을 로컬 저장소에 보존할 때 사용
-│   └── WatcherService.java            # [Service] OS WatchService 기반 파일 감시 로직 구현.
-│                                      # - 폴더 등록/감시 실행/이벤트 감지 및 Collector로 전달까지 담당
-
-└── WatchserviceAgentApplication.java  # [Spring Boot Entry Point] 스프링 애플리케이션 진입점.
-                                       # 모든 도메인을 로드하고 서버 실행 (main 클래스)
+└── settings/                                    # Settings 레이어: 감시 폴더/예외 규칙 설정 저장/조회
+    ├── SettingsController.java                  # [Controller] /settings/folders, /settings/exceptions REST API
+    ├── SettingsService.java                     # [Service] ownerKey 기준 설정 비즈니스 로직
+    ├── SettingsRepository.java                  # [Repository] SQLite watched_folder, exception_rule 테이블 DDL + CRUD
+    │
+    ├── domain/
+    │   ├── WatchedFolder.java                   # [Domain] 감시 폴더 설정 (id, ownerKey, name, path, createdAt)
+    │   └── ExceptionRule.java                   # [Domain] 예외(화이트리스트) 규칙
+    │                                            #  - type(PATH/EXT), pattern, memo, createdAt 포함
+    │
+    └── dto/
+        ├── WatchedFolderRequest.java            # [DTO] 감시 폴더 생성 요청 (name, path)
+        ├── WatchedFolderResponse.java           # [DTO] 감시 폴더 응답 (id, name, path, createdAt)
+        ├── ExceptionRuleRequest.java            # [DTO] 예외 규칙 생성 요청 (type, pattern, memo)
+        └── ExceptionRuleResponse.java           # [DTO] 예외 규칙 응답 (id, type, pattern, memo, createdAt)

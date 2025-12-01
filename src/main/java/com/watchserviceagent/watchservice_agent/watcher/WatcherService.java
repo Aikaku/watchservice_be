@@ -3,9 +3,7 @@ package com.watchserviceagent.watchservice_agent.watcher;
 import com.watchserviceagent.watchservice_agent.analytics.EventWindowAggregator;
 import com.watchserviceagent.watchservice_agent.collector.FileCollectorService;
 import com.watchserviceagent.watchservice_agent.collector.dto.FileAnalysisResult;
-import com.watchserviceagent.watchservice_agent.storage.LogService;
 import com.watchserviceagent.watchservice_agent.common.util.SessionIdManager;
-import com.watchserviceagent.watchservice_agent.watcher.domain.WatcherEvent;
 import com.watchserviceagent.watchservice_agent.watcher.dto.WatcherEventRecord;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,11 +30,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * Java NIO WatchService 를 사용하여 디렉토리/하위 디렉토리를 감시하는 서비스.
  *
  * 전체 흐름:
- *  1) WatchService 로 OS 파일 변경 이벤트(생성/수정/삭제)를 감지
- *  2) WatcherEventRecord 로 변환 (ownerKey, eventType, path, eventTimeMs)
+ *  1) WatchService 로 OS 파일 변경 이벤트 감지
+ *  2) WatcherEventRecord 로 변환
  *  3) FileCollectorService.analyze() 로 변경 전/후 상태 계산
- *  4) LogService.saveAsync() 로 비동기 로그 저장 큐에 적재
- *  5) EventWindowAggregator.onFileAnalysisResult() 로 윈도우 단위 피처 집계
+ *  4) EventWindowAggregator.onFileAnalysisResult() 로 윈도우 단위 피처 집계 및 로그 저장
  */
 @Service
 @RequiredArgsConstructor
@@ -46,22 +43,13 @@ public class WatcherService {
     private final SessionIdManager sessionIdManager;
     private final FileCollectorService fileCollectorService;
     private final EventWindowAggregator eventWindowAggregator;
-    private final LogService logService; // 비동기 로그 저장 서비스
 
     private WatchService watchService;
     private Thread watcherThread;
     private volatile boolean running = false;
 
-    /**
-     * key → 디렉토리 경로 매핑 (하위 디렉토리 감시용)
-     */
     private final Map<WatchKey, Path> keyDirMap = new ConcurrentHashMap<>();
 
-    /**
-     * 감시 시작.
-     *
-     * @param folderPath 감시할 루트 폴더 (문자열, 절대경로 권장)
-     */
     public synchronized void startWatching(String folderPath) throws IOException {
         if (running) {
             log.info("Watcher already running. ignore startWatching request. path={}", folderPath);
@@ -76,21 +64,16 @@ public class WatcherService {
         this.watchService = FileSystems.getDefault().newWatchService();
         this.keyDirMap.clear();
 
-        // 루트 + 하위 디렉토리 재귀 등록
         registerAll(root);
 
         running = true;
 
-        // 별도 스레드에서 watchLoop 실행
         watcherThread = new Thread(this::watchLoop, "WatcherService-Thread");
         watcherThread.start();
 
         log.info("Started watching folder: {}", folderPath);
     }
 
-    /**
-     * 모든 하위 디렉토리를 재귀적으로 순회하며 WatchService 에 등록.
-     */
     private void registerAll(Path start) throws IOException {
         Files.walkFileTree(start, new java.util.HashSet<>(), Integer.MAX_VALUE, new java.nio.file.SimpleFileVisitor<>() {
             @Override
@@ -101,9 +84,6 @@ public class WatcherService {
         });
     }
 
-    /**
-     * 개별 디렉토리를 WatchService 에 등록.
-     */
     private void register(Path dir) throws IOException {
         WatchKey key = dir.register(
                 watchService,
@@ -115,9 +95,6 @@ public class WatcherService {
         log.info("Registered directory for watching: {}", dir);
     }
 
-    /**
-     * 감시 중지.
-     */
     public synchronized void stopWatching() {
         if (!running) {
             log.info("Watcher is not running. ignore stopWatching request.");
@@ -145,15 +122,13 @@ public class WatcherService {
         }
 
         keyDirMap.clear();
+
+        // 감시 종료 시 마지막 윈도우 flush (남은 이벤트 있으면 AI+로그 처리)
+        eventWindowAggregator.flushIfNeeded();
+
         log.info("Stopped watching.");
     }
 
-    /**
-     * WatchService 이벤트 루프.
-     *
-     * - WatchKey 를 꺼내서, 등록된 디렉토리 기준으로 이벤트를 해석하고,
-     * - WatcherEventRecord 로 변환한 뒤 Collector/Analytics/Storage 로 전달.
-     */
     private void watchLoop() {
         String ownerKey = sessionIdManager.getSessionId();
         log.info("Watcher loop started. ownerKey={}", ownerKey);
@@ -162,7 +137,7 @@ public class WatcherService {
             while (running) {
                 WatchKey key;
                 try {
-                    key = watchService.take(); // 블로킹
+                    key = watchService.take();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     log.info("Watcher loop interrupted");
@@ -207,14 +182,11 @@ public class WatcherService {
 
                     log.debug("Watcher event: {}", record);
 
-                    // Collector 에서 변경 전/후 상태 분석
                     FileAnalysisResult analysisResult = fileCollectorService.analyze(record);
 
-                    // 비동기 로그 저장 및 윈도우 단위 피처 집계기로 전달
-                    logService.saveAsync(analysisResult);
+                    // 이제 로그 저장은 EventWindowAggregator 가 담당
                     eventWindowAggregator.onFileAnalysisResult(analysisResult);
 
-                    // 디렉토리가 새로 생성되면 하위 디렉토리도 추가 등록
                     if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
                         if (Files.isDirectory(child)) {
                             try {
@@ -245,9 +217,6 @@ public class WatcherService {
         }
     }
 
-    /**
-     * Java NIO 이벤트 Kind → 우리 쪽 이벤트 타입 문자열 매핑.
-     */
     private String mapKindToEventType(Kind<?> kind) {
         if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
             return "CREATE";

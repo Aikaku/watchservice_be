@@ -2,25 +2,20 @@ package com.watchserviceagent.watchservice_agent.dashboard;
 
 import com.watchserviceagent.watchservice_agent.common.util.SessionIdManager;
 import com.watchserviceagent.watchservice_agent.dashboard.dto.DashboardSummaryResponse;
-import com.watchserviceagent.watchservice_agent.dashboard.dto.DashboardSummaryResponse.RecentEventSummary;
 import com.watchserviceagent.watchservice_agent.storage.LogService;
-import com.watchserviceagent.watchservice_agent.storage.domain.Log;
-import com.watchserviceagent.watchservice_agent.watcher.WatcherRepository;
+import com.watchserviceagent.watchservice_agent.storage.dto.LogResponse;
+import com.watchserviceagent.watchservice_agent.watcher.WatcherService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.Locale;
-import java.util.stream.Collectors;
 
 /**
- * 메인 보드 대시보드 요약 정보를 제공하는 컨트롤러.
- *
- * GET /dashboard/summary
+ * 메인 대시보드 요약 정보를 제공하는 컨트롤러.
  */
 @RestController
 @RequestMapping("/dashboard")
@@ -28,31 +23,44 @@ import java.util.stream.Collectors;
 @Slf4j
 public class DashboardController {
 
-    private final SessionIdManager sessionIdManager;
     private final LogService logService;
-    private final WatcherRepository watcherRepository;
+    private final SessionIdManager sessionIdManager;
+    private final WatcherService watcherService; // 감시 상태/경로 파악용 (필요 시)
 
+    private static final DateTimeFormatter DATE_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+                    .withZone(ZoneId.systemDefault());
+
+    /**
+     * GET /dashboard/summary
+     *
+     * - 최근 50개 로그를 기반으로
+     *   · DANGER / WARNING 개수 파악
+     *   · 가장 최근 이벤트 시각
+     *   · 상태(status) 결정
+     */
     @GetMapping("/summary")
     public DashboardSummaryResponse getSummary() {
-        String ownerKey = sessionIdManager.getSessionId();
-
-        // 최근 로그 N개 가져오기 (LogService는 List<Log>를 반환)
-        int limit = 50;
-        List<Log> recentLogs = logService.getRecentLogs(ownerKey, limit);
+        int recentLimit = 50;
+        List<LogResponse> logs = logService.getRecentLogs(recentLimit);
 
         int dangerCount = 0;
         int warningCount = 0;
-
-        for (Log logEntity : recentLogs) {
-            String label = safeUpper(logEntity.getAiLabel());
-            if ("DANGER".equals(label)) {
-                dangerCount++;
-            } else if ("WARNING".equals(label)) {
-                warningCount++;
+        for (LogResponse log : logs) {
+            String label = log.getAiLabel();
+            if (label == null) continue;
+            switch (label.toUpperCase()) {
+                case "DANGER" -> dangerCount++;
+                case "WARNING" -> warningCount++;
             }
         }
 
-        // 보호 상태 계산 로직 (간단 버전)
+        int totalCount = logs.size();
+
+        // 상태 결정 로직:
+        //  - DANGER 한 개라도 있으면 → DANGER
+        //  - 그 외 WARNING 이 있으면 → WARNING
+        //  - 나머지 → SAFE
         String status;
         String statusLabel;
         if (dangerCount > 0) {
@@ -66,47 +74,32 @@ public class DashboardController {
             statusLabel = "안전";
         }
 
-        // 최근 이벤트의 시간 (가장 첫 번째 로그가 가장 최신이라고 가정)
-        String lastEventTime = "N/A";
-        if (!recentLogs.isEmpty()) {
-            Log first = recentLogs.get(0);
-            Instant ts = first.getCollectedAt();
-            lastEventTime = (ts != null) ? ts.toString() : "N/A";
+        // 마지막 이벤트 시간 문자열
+        String lastEventTimeStr = "-";
+        if (!logs.isEmpty()) {
+            // logs 는 최신순이므로 첫 번째가 가장 최근
+            Instant lastEvent = logService.getLastEventTime();
+            if (lastEvent != null) {
+                lastEventTimeStr = DATE_TIME_FORMATTER.format(lastEvent);
+            }
         }
 
-        // WatcherRepository에서 현재 감시 중인 루트 경로 (없을 수도 있음)
-        String watchRootPath = watcherRepository.getLastWatchedPath();
+        // 감시 경로: 지금은 WatcherService 에서 직접 제공하는 메서드가 없으니
+        // 나중에 별도 Repository/Service 로 관리할 수도 있음.
+        // 일단은 placeholder 로 둔다.
+        String watchedPath = "(현재 감시 경로 표시 예정)";
 
-        // 대시보드용 최근 이벤트 요약 5개 정도만 잘라서 내려줌
-        List<RecentEventSummary> recentEventSummaries = recentLogs.stream()
-                .limit(5L)
-                .map(logEntity -> {
-                    Instant ts = logEntity.getCollectedAt();
-                    String tsString = (ts != null) ? ts.toString() : null;
-                    return RecentEventSummary.builder()
-                            .id(logEntity.getId())
-                            .eventType(logEntity.getEventType())
-                            .path(logEntity.getPath())
-                            .aiLabel(logEntity.getAiLabel())
-                            .collectedAt(tsString)
-                            .build();
-                })
-                .collect(Collectors.toList());
-
-        return DashboardSummaryResponse.builder()
-                .ownerKey(ownerKey)
+        DashboardSummaryResponse resp = DashboardSummaryResponse.builder()
                 .status(status)
                 .statusLabel(statusLabel)
-                .lastEventTime(lastEventTime)
-                .watchRootPath(watchRootPath)
-                .recentDangerCount(dangerCount)
-                .recentWarningCount(warningCount)
-                .recentEvents(recentEventSummaries)
+                .lastEventTime(lastEventTimeStr)
+                .dangerCount(dangerCount)
+                .warningCount(warningCount)
+                .totalCount(totalCount)
+                .watchedPath(watchedPath)
                 .build();
-    }
 
-    private String safeUpper(String s) {
-        if (s == null) return null;
-        return s.toUpperCase(Locale.ROOT);
+        log.info("[DashboardController] /dashboard/summary -> {}", resp);
+        return resp;
     }
 }

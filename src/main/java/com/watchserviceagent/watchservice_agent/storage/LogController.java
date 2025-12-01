@@ -1,46 +1,37 @@
-// src/main/java/com/watchserviceagent/watchservice_agent/storage/LogController.java
 package com.watchserviceagent.watchservice_agent.storage;
 
-import com.watchserviceagent.watchservice_agent.common.util.SessionIdManager;
-import com.watchserviceagent.watchservice_agent.storage.domain.Log;
 import com.watchserviceagent.watchservice_agent.storage.dto.LogResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
- * 로그 조회용 REST 컨트롤러.
+ * 로그 조회용 컨트롤러.
  *
- * - 현재 세션(에이전트)의 ownerKey 를 기준으로 최근 로그를 반환한다.
+ * 프론트에서:
+ *   GET /logs/recent?limit=50
+ * 으로 사용한다.
  */
 @RestController
+@RequestMapping("/logs")
 @RequiredArgsConstructor
 @Slf4j
 public class LogController {
 
     private final LogService logService;
-    private final SessionIdManager sessionIdManager;
 
-    /**
-     * 현재 세션(에이전트)의 최근 로그 조회.
-     *
-     * GET /logs/recent?limit=100
-     */
-    @GetMapping("/logs/recent")
-    public List<LogResponse> getRecentLogs(
-            @RequestParam(defaultValue = "100") int limit
-    ) {
-        String ownerKey = sessionIdManager.getSessionId();
-        log.info("[LogController] 최근 로그 조회 요청 - ownerKey={}, limit={}", ownerKey, limit);
+    @GetMapping("/recent")
+    public List<LogResponse> getRecentLogs(@RequestParam(name = "limit", defaultValue = "50") int limit) {
+        if (limit <= 0) {
+            limit = 50;
+        } else if (limit > 1000) {
+            limit = 1000; // 너무 큰 값 방지
+        }
 
-        List<Log> logs = logService.getRecentLogs(ownerKey, limit);
-        return logs.stream()
-                .map(LogResponse::from)
-                .collect(Collectors.toList());
+        List<LogResponse> logs = logService.getRecentLogs(limit);
+        log.info("[LogController] /logs/recent limit={} -> {}건 반환", limit, logs.size());
+        return logs;
     }
 }
