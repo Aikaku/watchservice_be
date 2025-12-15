@@ -10,31 +10,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.nio.file.ClosedWatchServiceException;
-import java.nio.file.FileSystems;
-import java.nio.file.FileVisitResult;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardWatchEventKinds;
-import java.nio.file.WatchEvent;
-import java.nio.file.WatchEvent.Kind;
-import java.nio.file.WatchKey;
-import java.nio.file.WatchService;
+import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.time.Instant;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Java NIO WatchService 를 사용하여 디렉토리/하위 디렉토리를 감시하는 서비스.
- *
- * 전체 흐름:
- *  1) WatchService 로 OS 파일 변경 이벤트 감지
- *  2) WatcherEventRecord 로 변환
- *  3) FileCollectorService.analyze() 로 변경 전/후 상태 계산
- *  4) EventWindowAggregator.onFileAnalysisResult() 로 윈도우 단위 피처 집계 및 로그 저장
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -49,33 +29,50 @@ public class WatcherService {
     private volatile boolean running = false;
 
     private final Map<WatchKey, Path> keyDirMap = new ConcurrentHashMap<>();
+    private final List<Path> watchedRoots = new ArrayList<>();
 
     public synchronized void startWatching(String folderPath) throws IOException {
+        startWatchingMultiple(List.of(folderPath));
+    }
+
+    public synchronized void startWatchingMultiple(List<String> folderPaths) throws IOException {
         if (running) {
-            log.info("Watcher already running. ignore startWatching request. path={}", folderPath);
+            log.info("Watcher already running. ignore startWatching request. paths={}", folderPaths);
             return;
         }
 
-        Path root = Paths.get(folderPath);
-        if (!Files.exists(root) || !Files.isDirectory(root)) {
-            throw new IllegalArgumentException("감시할 경로가 존재하지 않거나 디렉토리가 아닙니다: " + folderPath);
+        List<Path> roots = new ArrayList<>();
+        for (String p : (folderPaths == null ? List.<String>of() : folderPaths)) {
+            if (p == null || p.isBlank()) continue;
+            Path root = Paths.get(p.trim());
+            if (!Files.exists(root) || !Files.isDirectory(root)) {
+                throw new IllegalArgumentException("감시할 경로가 존재하지 않거나 디렉토리가 아닙니다: " + p);
+            }
+            roots.add(root);
+        }
+
+        if (roots.isEmpty()) {
+            throw new IllegalArgumentException("감시할 폴더가 없습니다.");
         }
 
         this.watchService = FileSystems.getDefault().newWatchService();
         this.keyDirMap.clear();
+        this.watchedRoots.clear();
+        this.watchedRoots.addAll(roots);
 
-        registerAll(root);
+        for (Path root : roots) {
+            registerAll(root);
+        }
 
         running = true;
-
         watcherThread = new Thread(this::watchLoop, "WatcherService-Thread");
         watcherThread.start();
 
-        log.info("Started watching folder: {}", folderPath);
+        log.info("Started watching roots: {}", roots);
     }
 
     private void registerAll(Path start) throws IOException {
-        Files.walkFileTree(start, new java.util.HashSet<>(), Integer.MAX_VALUE, new java.nio.file.SimpleFileVisitor<>() {
+        Files.walkFileTree(start, new HashSet<>(), Integer.MAX_VALUE, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
                 register(dir);
@@ -92,7 +89,7 @@ public class WatcherService {
                 StandardWatchEventKinds.ENTRY_DELETE
         );
         keyDirMap.put(key, dir);
-        log.info("Registered directory for watching: {}", dir);
+        log.debug("Registered directory for watching: {}", dir);
     }
 
     public synchronized void stopWatching() {
@@ -122,8 +119,9 @@ public class WatcherService {
         }
 
         keyDirMap.clear();
+        watchedRoots.clear();
 
-        // 감시 종료 시 마지막 윈도우 flush (남은 이벤트 있으면 AI+로그 처리)
+        // 종료 시 남은 윈도우 flush
         eventWindowAggregator.flushIfNeeded();
 
         log.info("Stopped watching.");
@@ -149,16 +147,13 @@ public class WatcherService {
 
                 Path dir = keyDirMap.get(key);
                 if (dir == null) {
-                    log.warn("WatchKey not recognized. skip.");
                     boolean valid = key.reset();
-                    if (!valid) {
-                        keyDirMap.remove(key);
-                    }
+                    if (!valid) keyDirMap.remove(key);
                     continue;
                 }
 
                 for (WatchEvent<?> event : key.pollEvents()) {
-                    Kind<?> kind = event.kind();
+                    WatchEvent.Kind<?> kind = event.kind();
 
                     if (kind == StandardWatchEventKinds.OVERFLOW) {
                         log.warn("WatchService overflow event occurred. some events may have been lost.");
@@ -171,22 +166,20 @@ public class WatcherService {
                     Path child = dir.resolve(name);
 
                     String eventType = mapKindToEventType(kind);
-                    long eventTimeMs = System.currentTimeMillis();
 
                     WatcherEventRecord record = WatcherEventRecord.builder()
                             .ownerKey(ownerKey)
                             .eventType(eventType)
                             .path(child.toAbsolutePath().toString())
-                            .eventTimeMs(eventTimeMs)
+                            .eventTimeMs(System.currentTimeMillis())
                             .build();
-
-                    log.debug("Watcher event: {}", record);
 
                     FileAnalysisResult analysisResult = fileCollectorService.analyze(record);
 
-                    // 이제 로그 저장은 EventWindowAggregator 가 담당
+                    // ✅ 윈도우 집계+AI+로그 저장
                     eventWindowAggregator.onFileAnalysisResult(analysisResult);
 
+                    // 새 폴더 생성되면 자동 등록
                     if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
                         if (Files.isDirectory(child)) {
                             try {
@@ -207,8 +200,6 @@ public class WatcherService {
                     }
                 }
             }
-        } catch (ClosedWatchServiceException e) {
-            log.info("WatchService has been closed. watcher loop will exit.");
         } catch (Exception e) {
             log.error("Unexpected error in watcher loop", e);
         } finally {
@@ -217,16 +208,11 @@ public class WatcherService {
         }
     }
 
-    private String mapKindToEventType(Kind<?> kind) {
-        if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
-            return "CREATE";
-        } else if (kind == StandardWatchEventKinds.ENTRY_MODIFY) {
-            return "MODIFY";
-        } else if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
-            return "DELETE";
-        } else {
-            return "UNKNOWN";
-        }
+    private String mapKindToEventType(WatchEvent.Kind<?> kind) {
+        if (kind == StandardWatchEventKinds.ENTRY_CREATE) return "CREATE";
+        if (kind == StandardWatchEventKinds.ENTRY_MODIFY) return "MODIFY";
+        if (kind == StandardWatchEventKinds.ENTRY_DELETE) return "DELETE";
+        return "UNKNOWN";
     }
 
     public boolean isRunning() {

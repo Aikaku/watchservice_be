@@ -1,32 +1,23 @@
 package com.watchserviceagent.watchservice_agent.settings;
 
-import com.watchserviceagent.watchservice_agent.settings.dto.WatchedFolderRequest;
-import com.watchserviceagent.watchservice_agent.settings.dto.WatchedFolderResponse;
 import com.watchserviceagent.watchservice_agent.settings.dto.ExceptionRuleRequest;
 import com.watchserviceagent.watchservice_agent.settings.dto.ExceptionRuleResponse;
+import com.watchserviceagent.watchservice_agent.settings.dto.WatchedFolderRequest;
+import com.watchserviceagent.watchservice_agent.settings.dto.WatchedFolderResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
+import javax.swing.*;
+import java.awt.*;
 import java.util.List;
+import java.util.Map;
 
-/**
- * 설정(감시 폴더, 예외 규칙) 관련 REST API.
- *
- * - 감시 폴더:
- *   GET    /settings/folders
- *   POST   /settings/folders
- *   DELETE /settings/folders/{id}
- *
- * - 예외 규칙:
- *   GET    /settings/exceptions
- *   POST   /settings/exceptions
- *   DELETE /settings/exceptions/{id}
- */
 @RestController
 @RequestMapping("/settings")
 @RequiredArgsConstructor
 @Slf4j
+@CrossOrigin(origins = {"http://localhost:3000", "http://localhost:5173"})
 public class SettingsController {
 
     private final SettingsService settingsService;
@@ -51,6 +42,40 @@ public class SettingsController {
     public void deleteWatchedFolder(@PathVariable("id") Long id) {
         settingsService.deleteWatchedFolder(id);
         log.info("[SettingsController] DELETE /settings/folders/{}", id);
+    }
+
+    /**
+     * ✅ 폴더 선택 다이얼로그
+     * GET /settings/folders/pick -> { "path": "C:\\Users\\..." } or { "path": "" }
+     */
+    @GetMapping("/folders/pick")
+    public Map<String, String> pickFolder() {
+        log.info("[SettingsController] GET /settings/folders/pick");
+
+        try {
+            // Swing은 EDT에서 동작 권장
+            final String[] chosen = new String[]{""};
+
+            EventQueue.invokeAndWait(() -> {
+                JFileChooser chooser = new JFileChooser();
+                chooser.setDialogTitle("감시할 폴더를 선택하세요");
+                chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+                chooser.setAcceptAllFileFilterUsed(false);
+
+                int result = chooser.showOpenDialog(null);
+                if (result == JFileChooser.APPROVE_OPTION && chooser.getSelectedFile() != null) {
+                    chosen[0] = chooser.getSelectedFile().getAbsolutePath();
+                }
+            });
+
+            log.info("[SettingsController] picked path={}", chosen[0]);
+            return Map.of("path", chosen[0] == null ? "" : chosen[0]);
+
+        } catch (Exception e) {
+            log.error("[SettingsController] folder pick failed", e);
+            // 프론트에서 alert로 보이게 에러 던져도 됨. 일단 빈값 반환.
+            return Map.of("path", "");
+        }
     }
 
     // ===== 예외 규칙 =====
