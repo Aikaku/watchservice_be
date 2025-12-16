@@ -1,83 +1,82 @@
-watchservice_agent
-├── ai
-│   ├── domain
-│   │   └── AiResult.java
-│   ├── dto
-│   │   ├── AiPayload.java
-│   │   └── AiResponse.java
+watchservice_agent/
+├── WatchserviceAgentApplication.java
+├── ai/
 │   ├── AiController.java
-│   └── AiService.java
-├── alerts
-│   ├── dto
-│   │   ├── AlertPageResponse.java
-│   │   ├── AlertStatsResponse.java
-│   │   └── AlertStatusResponse.java
+│   ├── AiService.java
+│   ├── domain/
+│   │   └── AiResult.java
+│   └── dto/
+│       ├── AiPayload.java
+│       └── AiResponse.java
+├── alerts/
 │   ├── AlertController.java
-│   └── AlertService.java
-├── analytics
-│   ├── dto
-│   │   ├── RiskScoreResponse.java
-│   │   └── WindowStatResponse.java
-│   ├── AnalyticsController.java
-│   └── AnalyticsService.java
-├── collector
-│   ├── domain
-│   │   ├── EventType.java
-│   │   └── FileEvent.java
-│   ├── dto
-│   │   ├── CollectorEventRequest.java
-│   │   └── CollectorEventResponse.java
-│   ├── CollectorController.java
-│   └── CollectorService.java
-├── common
-│   ├── config
-│   │   ├── CorsConfig.java
+│   ├── AlertService.java
+│   └── dto/
+│       ├── AlertPageResponse.java
+│       ├── AlertStatsResponse.java
+│       └── AlertStatusResponse.java
+├── analytics/
+│   └── EventWindowAggregator.java
+├── collector/
+│   ├── FileCollectorService.java
+│   ├── dto/
+│   │   └── FileAnalysisResult.java
+│   ├── business/
+│   │   ├── EntropyAnalyzer.java
+│   │   └── HashCalculator.java
+│   └── snapshot/
+│       ├── FileSnapshotStore.java
+│       └── SnapshotConfig.java
+├── common/
+│   ├── config/
 │   │   └── WebConfig.java
-│   ├── error
-│   │   ├── ApiError.java
-│   │   └── GlobalExceptionHandler.java
-│   └── util
-│       ├── HashUtils.java
-│       ├── JsonUtils.java
-│       └── TimeUtils.java
-├── dashboard
-│   ├── dto
-│   │   └── DashboardSummaryResponse.java
+│   └── util/
+│       └── SessionIdManager.java
+├── dashboard/
 │   ├── DashboardController.java
-│   └── DashboardService.java
-├── scan
-│   ├── dto
-│   │   ├── ScanRequest.java
-│   │   └── ScanResponse.java
+│   └── dto/
+│       └── DashboardSummaryResponse.java
+├── scan/
 │   ├── ScanController.java
-│   └── ScanService.java
-├── settings
-│   ├── dto
-│   │   ├── ExceptionRuleRequest.java
-│   │   ├── ExceptionRuleResponse.java
-│   │   ├── FolderRequest.java
-│   │   ├── FolderResponse.java
-│   │   └── NotifySettingResponse.java
+│   ├── ScanService.java
+│   ├── domain/
+│   │   ├── ScanJob.java
+│   │   └── ScanStatus.java
+│   └── dto/
+│       ├── ScanPauseResponse.java
+│       ├── ScanProgressResponse.java
+│       ├── ScanStartRequest.java
+│       └── ScanStartResponse.java
+├── settings/
 │   ├── SettingsController.java
-│   └── SettingsService.java
-├── storage
-│   ├── domain
-│   │   └── LogRecord.java
-│   ├── dto
-│   │   ├── LogDeleteRequest.java
-│   │   ├── LogExportRequest.java
-│   │   ├── LogPageResponse.java
-│   │   └── LogResponse.java
+│   ├── SettingsRepository.java
+│   ├── SettingsService.java
+│   ├── domain/
+│   │   ├── ExceptionRule.java
+│   │   └── WatchedFolder.java
+│   └── dto/
+│       ├── ExceptionRuleRequest.java
+│       ├── ExceptionRuleResponse.java
+│       ├── WatchedFolderRequest.java
+│       └── WatchedFolderResponse.java
+├── storage/
 │   ├── LogController.java
 │   ├── LogRepository.java
 │   ├── LogService.java
-│   └── LogWriterWorker.java
-├── watcher
-│   ├── domain
-│   │   └── WatcherEvent.java
-│   ├── dto
-│   │   └── WatcherEventRecord.java
-│   ├── WatcherController.java
-│   ├── WatcherRepository.java
-│   └── WatcherService.java
-└── WatchserviceAgentApplication.java
+│   ├── LogWriterWorker.java
+│   ├── domain/
+│   │   └── Log.java
+│   └── dto/
+│       ├── LogDeleteRequest.java
+│       ├── LogDeleteResponse.java
+│       ├── LogExportRequest.java
+│       ├── LogPageResponse.java
+│       └── LogResponse.java
+└── watcher/
+    ├── WatcherController.java
+    ├── WatcherRepository.java
+    ├── WatcherService.java
+    ├── domain/
+    │   └── WatcherEvent.java
+    └── dto/
+        └── WatcherEventRecord.java
