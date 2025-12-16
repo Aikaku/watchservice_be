@@ -11,7 +11,7 @@ import java.awt.*;
 public class WatchserviceAgentApplication {
 
 	public static void main(String[] args) {
-		log.info("[Test] - 5");
+		log.info("[Test] - 6");
 		System.out.println("java.awt.headless=" + System.getProperty("java.awt.headless"));
 		System.out.println("isHeadless=" + GraphicsEnvironment.isHeadless());
 

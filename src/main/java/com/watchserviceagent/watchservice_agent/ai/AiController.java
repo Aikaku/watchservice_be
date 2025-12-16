@@ -5,6 +5,9 @@ import com.watchserviceagent.watchservice_agent.ai.dto.AiPayload;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
+import com.watchserviceagent.watchservice_agent.ai.dto.FamilyPredictResponse;
+import java.util.Map;
+
 
 /**
  * AI 서버 연동을 직접 테스트하기 위한 컨트롤러.
@@ -49,6 +52,38 @@ public class AiController {
         log.info("[AiController] /ai/analyze 결과: {}", result);
         return result;
     }
+
+    /**
+     * 랜섬웨어 패밀리 분류 테스트 엔드포인트(1): AiPayload 그대로 받기
+     * POST /ai/family/predict?topk=5
+     */
+    @PostMapping("/family/predict")
+    public FamilyPredictResponse predictFamily(
+            @RequestBody AiPayload payload,
+            @RequestParam(defaultValue = "5") int topk
+    ) {
+        log.info("[AiController] /ai/family/predict 요청: payload={}, topk={}", payload, topk);
+        FamilyPredictResponse res = aiService.requestFamilyPredict(payload, topk);
+        log.info("[AiController] /ai/family/predict 응답: {}", res);
+        return res;
+    }
+
+    /**
+     * 랜섬웨어 패밀리 분류 테스트 엔드포인트(2): Map으로 받기(유연)
+     * POST /ai/family/predict/features?topk=5
+     */
+    @PostMapping("/family/predict/features")
+    public FamilyPredictResponse predictFamilyByFeatures(
+            @RequestBody Map<String, Object> features,
+            @RequestParam(defaultValue = "5") int topk
+    ) {
+        log.info("[AiController] /ai/family/predict/features 요청: topk={}, features={}", topk, features);
+        FamilyPredictResponse res = aiService.requestFamilyPredict(features, topk);
+        log.info("[AiController] /ai/family/predict/features 응답: {}", res);
+        return res;
+    }
+
+
 
     /**
      * 간단 헬스체크용 (원하면 프론트에서 ping 용도로 사용 가능).

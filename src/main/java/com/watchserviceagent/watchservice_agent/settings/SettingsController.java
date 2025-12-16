@@ -6,12 +6,16 @@ import com.watchserviceagent.watchservice_agent.settings.dto.WatchedFolderReques
 import com.watchserviceagent.watchservice_agent.settings.dto.WatchedFolderResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import javax.swing.*;
-import java.awt.*;
+import javax.swing.JFileChooser;
+import java.awt.EventQueue;
+import java.awt.GraphicsEnvironment;
+import java.io.File;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 @RestController
 @RequestMapping("/settings")
@@ -46,35 +50,42 @@ public class SettingsController {
 
     /**
      * ✅ 폴더 선택 다이얼로그
-     * GET /settings/folders/pick -> { "path": "C:\\Users\\..." } or { "path": "" }
+     * GET /settings/folders/pick -> { "path": "C:\\Users\\..." } 또는 빈값이면 취소
      */
     @GetMapping("/folders/pick")
-    public Map<String, String> pickFolder() {
-        log.info("[SettingsController] GET /settings/folders/pick");
-
+    public ResponseEntity<?> pickFolder() {
         try {
-            // Swing은 EDT에서 동작 권장
-            final String[] chosen = new String[]{""};
+            if (GraphicsEnvironment.isHeadless()) {
+                // headless면 다이얼로그 불가
+                return ResponseEntity.status(409).body("Headless environment: cannot open folder picker");
+            }
 
-            EventQueue.invokeAndWait(() -> {
+            AtomicReference<String> pickedPath = new AtomicReference<>("");
+
+            Runnable job = () -> {
                 JFileChooser chooser = new JFileChooser();
-                chooser.setDialogTitle("감시할 폴더를 선택하세요");
                 chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+                chooser.setDialogTitle("감시 폴더 선택");
                 chooser.setAcceptAllFileFilterUsed(false);
 
                 int result = chooser.showOpenDialog(null);
-                if (result == JFileChooser.APPROVE_OPTION && chooser.getSelectedFile() != null) {
-                    chosen[0] = chooser.getSelectedFile().getAbsolutePath();
+                if (result == JFileChooser.APPROVE_OPTION) {
+                    File selected = chooser.getSelectedFile();
+                    pickedPath.set(selected != null ? selected.getAbsolutePath() : "");
+                } else {
+                    pickedPath.set("");
                 }
-            });
+            };
 
-            log.info("[SettingsController] picked path={}", chosen[0]);
-            return Map.of("path", chosen[0] == null ? "" : chosen[0]);
+            // EDT 처리
+            if (EventQueue.isDispatchThread()) job.run();
+            else EventQueue.invokeAndWait(job);
 
+            String path = pickedPath.get();
+            return ResponseEntity.ok(Map.of("path", path == null ? "" : path));
         } catch (Exception e) {
             log.error("[SettingsController] folder pick failed", e);
-            // 프론트에서 alert로 보이게 에러 던져도 됨. 일단 빈값 반환.
-            return Map.of("path", "");
+            return ResponseEntity.internalServerError().body("folder pick failed: " + e.getMessage());
         }
     }
 
