@@ -18,6 +18,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
 
+/**
+ * 클래스 이름 : AlertService
+ * 기능 : 알림(위험 이벤트) 조회 및 통계를 처리하는 비즈니스 로직을 제공한다.
+ * 작성 날짜 : 2025/12/17
+ * 작성자 : 시스템
+ */
 @Service
 @RequiredArgsConstructor
 public class AlertService {
@@ -28,6 +34,14 @@ public class AlertService {
     private static final int MAX_PAGE_SIZE = 1000;
     private static final DateTimeFormatter DATE_TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    /**
+     * 함수 이름 : getAlerts
+     * 기능 : 페이지네이션, 필터링, 정렬을 지원하는 알림 목록을 조회한다.
+     * 매개변수 : page - 페이지 번호, size - 페이지 크기, from - 시작 날짜, to - 종료 날짜, level - 위험도 필터, keyword - 검색 키워드, sort - 정렬 기준
+     * 반환값 : AlertPageResponse - 페이지네이션된 알림 목록
+     * 작성 날짜 : 2025/12/17
+     * 작성자 : 시스템
+     */
     public AlertPageResponse getAlerts(
             Integer page,
             Integer size,
@@ -68,6 +82,15 @@ public class AlertService {
                 .build();
     }
 
+    /**
+     * 함수 이름 : getAlertById
+     * 기능 : ID로 단일 알림의 상세 정보를 조회한다.
+     * 매개변수 : id - 알림 ID
+     * 반환값 : LogResponse - 알림 상세 정보
+     * 예외 : NoSuchElementException - 알림을 찾을 수 없을 때
+     * 작성 날짜 : 2025/12/17
+     * 작성자 : 시스템
+     */
     public LogResponse getAlertById(long id) {
         String ownerKey = sessionIdManager.getSessionId();
         Log logEntity = logRepository.findAlertByIdAndOwner(ownerKey, id)
@@ -75,6 +98,14 @@ public class AlertService {
         return LogResponse.from(logEntity);
     }
 
+    /**
+     * 함수 이름 : getStats
+     * 기능 : 알림 통계를 일별 또는 주별로 조회한다.
+     * 매개변수 : range - 통계 범위 (daily|weekly), from - 시작 날짜, to - 종료 날짜
+     * 반환값 : AlertStatsResponse - 알림 통계 데이터
+     * 작성 날짜 : 2025/12/17
+     * 작성자 : 시스템
+     */
     public AlertStatsResponse getStats(String range, String from, String to) {
         String rg = (range == null) ? "daily" : range.trim().toLowerCase(Locale.ROOT);
         if (!rg.equals("daily") && !rg.equals("weekly")) rg = "daily";
