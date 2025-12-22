@@ -3,7 +3,10 @@ package com.watchserviceagent.watchservice_agent.analytics;
 import com.watchserviceagent.watchservice_agent.ai.AiService;
 import com.watchserviceagent.watchservice_agent.ai.domain.AiResult;
 import com.watchserviceagent.watchservice_agent.ai.dto.AiPayload;
+import com.watchserviceagent.watchservice_agent.alerts.NotificationService;
+import com.watchserviceagent.watchservice_agent.alerts.domain.Notification;
 import com.watchserviceagent.watchservice_agent.collector.dto.FileAnalysisResult;
+import com.watchserviceagent.watchservice_agent.common.util.SessionIdManager;
 import com.watchserviceagent.watchservice_agent.storage.LogService;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +16,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * 클래스 이름 : EventWindowAggregator
@@ -85,6 +89,8 @@ public class EventWindowAggregator {
     // =========================
     private final AiService aiService;
     private final LogService logService;
+    private final NotificationService notificationService;
+    private final SessionIdManager sessionIdManager;
 
     // =========================
     // State
@@ -220,6 +226,38 @@ public class EventWindowAggregator {
         for (FileAnalysisResult r : currentEvents) {
             FileAnalysisResult enriched = r.withAiResult(aiResult);
             logService.saveAsync(enriched);
+        }
+
+        // ✅ 윈도우 단위 알림 저장: affectedPaths 수집
+        List<String> affectedPaths = currentEvents.stream()
+                .map(FileAnalysisResult::getPath)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+
+        String ownerKey = currentEvents.isEmpty() ? sessionIdManager.getSessionId() : currentEvents.get(0).getOwnerKey();
+        if (ownerKey == null) ownerKey = sessionIdManager.getSessionId();
+
+        Instant createdAt = Instant.now();
+
+        Notification notification = Notification.builder()
+                .ownerKey(ownerKey)
+                .windowStart(windowStart)
+                .windowEnd(windowEnd)
+                .createdAt(createdAt)
+                .aiLabel(aiResult.getLabel())
+                .aiScore(aiResult.getScore())
+                .topFamily(aiResult.getTopFamily())
+                .aiDetail(aiResult.getDetail())
+                .affectedFilesCount(affectedPaths.size())
+                .affectedPaths(affectedPaths)
+                .build();
+
+        try {
+            notificationService.saveNotification(notification);
+            log.debug("[EventWindowAggregator] 알림 저장 완료: affectedFilesCount={}", affectedPaths.size());
+        } catch (Exception e) {
+            log.error("[EventWindowAggregator] 알림 저장 실패", e);
         }
 
         currentEvents.clear();

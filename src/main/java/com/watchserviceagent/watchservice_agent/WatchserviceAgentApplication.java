@@ -29,7 +29,7 @@ public class WatchserviceAgentApplication {
 		System.setProperty("java.awt.headless", "false");
 
 		log.info("Watchservice Agent 애플리케이션 시작");
-		log.info("[Test] - 1");
+		log.info("[Test] - 2");
 		log.info("java.awt.headless 시스템 속성 = {}", System.getProperty("java.awt.headless"));
 
 		SpringApplication.run(WatchserviceAgentApplication.class, args);
